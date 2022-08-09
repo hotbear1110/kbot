@@ -3,13 +3,13 @@
 
 const express = require('express');
 const fs = require('fs');
-const mysql = require('mysql2');
 const got = require('got');
 const creds = require('./lib/credentials/config.js');
 const utils = require('./lib/utils/utils.js');
 const bodyParser = require('body-parser');
 const shell = require('child_process');
 const rateLimit = require("express-rate-limit");
+const init = require('./lib/utils/connection.js');
 
 const apiLimiter = rateLimit({
     windowMs: 60 * 1000, // 1 minute
@@ -23,39 +23,10 @@ app.set('trust proxy', 1);
 
 app.use("/api/", apiLimiter);
 
-const con = mysql.createConnection({
-	host: "localhost",
-	user: "root",
-	password: creds.db_pass,
-	database: "kbot"
-});
+const kb = new init.IRC();
 
-con.on('error', (err) => {
-    console.log(err);
-});
-
-con.connect((err) => {
-	if (err) {
-		console.log('Database connection error in express');
-	}
-});
-
-const options = {
-    options: {
-        debug: false,
-    },
-    connection: {
-        cluster: 'aws',
-    },
-    identity: {
-        username: 'ksyncbot',
-        password: creds.oauth,
-    }
-};
-
-const tmi = require('tmi.js');
-const kb = new tmi.client(options);
-kb.connect();
+kb.tmiConnect();
+kb.sqlConnect();
 
 // github webhook
 const crypto = require("crypto");
@@ -82,11 +53,14 @@ webhookHandler.on('*', async function (event, repo, data, head) {
     );
 
     if (event === "push") {
-        await utils.query(`
+        await kb.query(`
             UPDATE stats
             SET date=?, sha=?
             WHERE type="ping"`,
-            [data.head_commit.timestamp, data.head_commit.id.slice(0, 7)]);
+            [
+                data.head_commit?.timestamp ?? new Date().toISOString().slice(0, 19).replace('T', ' '),
+                data.head_commit.id.slice(0, 7)
+            ]);
 
         const files = (filenames) => {
             const path = require('path');
@@ -226,12 +200,12 @@ app.use(async function(req, res, next) {
 
 // api handling
 app.get("/connections", async (req, res) => {
-    const userCount = await utils.query(`
+    const userCount = await kb.query(`
         SELECT COUNT(*) AS count
         FROM access_token
         WHERE platform="spotify" AND user IS NOT NULL`);
 
-    const execCount = await utils.query(`
+    const execCount = await kb.query(`
         SELECT COUNT(*) AS count
         FROM executions
         WHERE command LIKE "%spotify%"`);
@@ -250,117 +224,6 @@ app.get("/connections", async (req, res) => {
 
     return;
 });
-
-// todo chatguesser game
-/*app.get("/chatguesser", async (req, res) => {
-    const randomChannel = "logs_nymn"
-
-    const maxId = await utils.query(`SELECT MAX(ID) as maxid FROM ??`, [randomChannel])
-    const randomId = Math.floor(Math.random() * Math.floor(maxId[0].maxid));
-
-    let messages = await utils.query(`
-        SELECT t.username, t.message, t.date
-        FROM (
-            SELECT id
-            FROM ??
-            ORDER BY id
-            LIMIT ?, 100
-            ) q
-        JOIN ?? t
-        ON t.id = q.id`,
-        [randomChannel, Number(randomId), randomChannel]);
-
-    const emotes = await utils.query(`
-        SELECT *
-        FROM emotes
-        WHERE channel=?`, [randomChannel.replace('logs_', '')]);
-
-    for (let i = 0; i<messages.length; i++) {
-        for (let j = 0; j<emotes.length; j++) {
-            const emoteRegex = new RegExp(`\\b${emotes[j].emote.toString()}\\b`, "g");
-            const replace = (emotes[j].url === null) ? emotes[j].emote : `<img style="vertical-align: middle; margin-top: -5px" src="${emotes[j].url}">`;
-            messages[i].message = messages[i].message.replace(emoteRegex, replace);
-        }
-    }
-
-    res.send(`<!DOCTYPE html>
-        <html>
-            <head>
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-            <script
-                src="https://code.jquery.com/jquery-3.6.0.js"
-                integrity="sha256-H+K7U5CnXl1h5ywQfKtSj8PCmoN9aaq30gDh27Xc0jk="
-                crossorigin="anonymous"></script>
-            <style>
-            body {
-              margin: 0 auto;
-              max-width: 430px;
-              padding: 0 20px;
-            }
-
-            .container {
-              border-top: 1px solid #999a;
-              background-color: rgb(40,40,40);
-              padding: 6px;
-              margin: 1px 0;
-            }
-
-            .darker {
-              background-color: rgb(30,30,30);
-            }
-
-            .container::after {
-              content: "";
-              clear: both;
-              display: table;
-            }
-
-            .time-left {
-              float: left;
-              color: #999;
-            }
-
-            .chatbox {
-              margin-top: 5vh;
-              margin-bottom: 5vh;
-              padding: 3px;
-              word-break: break-word;
-              word-wrap: break-word;
-              overflow: scroll;
-              overflow-x: hidden;
-              height: 80vh;
-            }
-
-            .container:nth-child(odd) {
-                background-color: #202020;
-            }
-
-            .container:nth-child(even) {
-                background-color: #2c2c2c;
-            }
-
-            </style>
-            </head>
-            <body style="background-color: #1a1a1a;">
-                <div class="chatbox" id="chatbox"></div>
-                <script type="text/javascript">
-                    const chatData = ${JSON.stringify(messages)};
-                    for (let i = 0; i<${messages.length}; i++) {
-                        if (i === 0) {
-                            $("#chatbox").append('<div class="container"><span class="time-left">' + (new Date(chatData[i].date).toISOString().split('T')[1].split('.')[0]) + '<span style="color:white"><strong style="color: red"> '+ chatData[i].username +':</strong> ' + chatData[i].message + '</span></span></div>');
-                        } else {
-                        console.log((Date.parse(chatData[i].date) - Date.parse(chatData[i-1].date)));
-                            setTimeout(() => {
-                                $("#chatbox").append('<div class="container"><span class="time-left">' + (new Date(chatData[i].date).toISOString().split('T')[1].split('.')[0]) + '<span style="color:white"><strong style="color: red"> '+ chatData[i].username +':</strong> ' + chatData[i].message + '</span></span></div>');
-                                $("#chatbox").scrollTop($("#chatbox")[0].scrollHeight);
-                            }, 500);
-                        }
-                    }
-                </script>
-            </body>
-        </html>
-        `)
-})*/
 
 app.get("/api/user", async(req, res) => {
     const userid = req.headers["userid"] || req.query.userid;
@@ -453,7 +316,7 @@ app.get("/api/user", async(req, res) => {
 // kunszg.com/api/channels
 app.get("/api/channels", async (req, res) => {
     if (typeof req.query.details === "undefined") {
-        let channelList = await utils.query("SELECT * FROM channels");
+        let channelList = await kb.query("SELECT * FROM channels");
 
         channelList = channelList.map(i => i.channel);
 
@@ -467,16 +330,16 @@ app.get("/api/channels", async (req, res) => {
         let channels, logs;
 
         if (!req.query.channel || Array.isArray(req.query.channel)) {
-            channels = await utils.query("SELECT * FROM channels");
-            logs = await utils.query("SELECT * FROM channels_logger");
+            channels = await kb.query("SELECT * FROM channels");
+            logs = await kb.query("SELECT * FROM channels_logger");
         }
         else {
-            channels = await utils.query(`
+            channels = await kb.query(`
                 SELECT *
                 FROM channels
                 WHERE channel=?`, [req.query.channel])
 
-            logs = await utils.query(`
+            logs = await kb.query(`
                 SELECT *
                 FROM channels_logger
                 WHERE channel=?`, [req.query.channel])
@@ -488,14 +351,14 @@ app.get("/api/channels", async (req, res) => {
             }
         }
 
-        const executions = await utils.query(`
+        const executions = await kb.query(`
             SELECT channel, COUNT(*) AS count
             FROM executions
             GROUP BY channel
             ORDER BY count
             DESC`);
 
-        const banphraseApis = await utils.query("SELECT * FROM channel_banphrase_apis");
+        const banphraseApis = await kb.query("SELECT * FROM channel_banphrase_apis");
 
         const result = {};
 
@@ -587,7 +450,7 @@ app.get("/countdown", async (req, res) => {
                         </body>
                     </html>`;
 
-            await utils.query(`
+            await kb.query(`
                 INSERT INTO countdown (verifcode, date)
                 VALUES (?, CURRENT_TIMESTAMP)`,
                 [verifCode]);
@@ -600,7 +463,7 @@ app.get("/countdown", async (req, res) => {
             req.query.seconds = 120;
         }
 
-        const checkIfUpdated = await utils.query(`
+        const checkIfUpdated = await kb.query(`
             SELECT *
             FROM countdown
             WHERE verifcode=?`,
@@ -612,13 +475,13 @@ app.get("/countdown", async (req, res) => {
         }
 
         if (checkIfUpdated[0].seconds === null) {
-            await utils.query(`
+            await kb.query(`
                 UPDATE countdown SET seconds=?
                 WHERE verifcode=?`,
                 [Date.now()/1000 + Number(req.query.seconds), req.query.verifcode]);
         }
 
-        const seconds = await utils.query(`
+        const seconds = await kb.query(`
             SELECT *
             FROM countdown
             WHERE verifcode=?`,
@@ -636,7 +499,6 @@ app.get("/countdown", async (req, res) => {
         }]);
 
         res.send(page.template())
-        return;
     } catch (err) {
         console.log(err);
     }
@@ -665,7 +527,7 @@ app.get("/lastfmresolved", async (req, res) => {
         (async () => {
             res.send(page.template());
 
-            await utils.query(`
+            await kb.query(`
                 UPDATE access_token
                 SET access_token=?,
                     refresh_token="lastfm currently playing",
@@ -688,14 +550,13 @@ app.get("/lastfmresolved", async (req, res) => {
         }
     }
 
-
     return;
 });
 
 app.get("/lastfm", async (req, res) => {
     const verifCode = utils.genString();
 
-    const accessToken = await utils.query(`
+    const accessToken = await kb.query(`
         SELECT *
         FROM access_token
         WHERE code="verifCode"`);
@@ -704,7 +565,7 @@ app.get("/lastfm", async (req, res) => {
         res.send('<body>error<body>');
     }
 
-    await utils.query(`
+    await kb.query(`
         INSERT INTO access_token (code)
         VALUES (?)`, [verifCode]);
 
@@ -728,7 +589,7 @@ app.get("/resolved", async (req, res) => {
 
     const verifCode = utils.genString();
 
-    const accessToken = await utils.query(`
+    const accessToken = await kb.query(`
         SELECT *
         FROM access_token
         WHERE code="verifCode"`);
@@ -747,7 +608,7 @@ app.get("/resolved", async (req, res) => {
                 },
             }).json();
 
-            const checkPremium = await got(`https://api.spotify.com/v1/me`, {
+            const profile = await got(`https://api.spotify.com/v1/me`, {
                 method: "GET",
                 headers: {
                     'Authorization': `Bearer ${spotifyToken.access_token}`,
@@ -755,10 +616,10 @@ app.get("/resolved", async (req, res) => {
                 },
             }).json();
 
-            await utils.query(`
+            await kb.query(`
                 INSERT INTO access_token (access_token, refresh_token, premium, code, platform)
                 VALUES (?, ?, ?, ?, "spotify")`,
-                [spotifyToken.access_token, spotifyToken.refresh_token, ((checkPremium.product === "open") ? "N" : "Y"), verifCode]);
+                [spotifyToken.access_token, spotifyToken.refresh_token, ((profile.product === "open") ? "N" : "Y"), verifCode]);
         })();
     } catch (err) {
         if (err.message === "Response code 400 (Bad Request)") {
@@ -780,8 +641,40 @@ app.get("/resolved", async (req, res) => {
 
     res.send(page.template());
 
-
     return;
+});
+
+app.get("/resolvedProjekt", async (req, res) => {
+    if (typeof req.query.code === "undefined") {
+        res.send({"error": "no code"});
+        return;
+    }
+
+    try {
+        (async () => {
+            const results = await kb.query(`
+                SELECT *
+                FROM access_token
+                WHERE code=?`, [req.query.code]);
+
+            if (!results.length) {
+                res.send({"error": "no results"});
+            }
+            else {
+                await kb.query(`
+                    UPDATE access_token
+                    SET code="Resolved", platform="qt", user=?
+                    WHERE code=?`, [req.query.code, req.query.code]);
+
+                res.send(results[0])
+            }
+        })();
+    } catch (err) {
+        if (err.message === "Response code 400 (Bad Request)") {
+            res.send('<body>Your code has expired, repeat the process.</body>');
+        }
+    }
+
 });
 
 kb.on("whisper", async (username, user, message, self) => {
@@ -790,10 +683,9 @@ kb.on("whisper", async (username, user, message, self) => {
     const owner = (await utils.Get.user().owner())[0].username;
 
     kb.whisper(owner, `whisper to kbot: ${username}: ${message}`);
-
     if (message.split(' ')[0] === "verify-lastfm") {
         // check if user is banned from bot
-        const checkBan = await utils.query(`
+        const checkBan = await kb.query(`
             SELECT *
             FROM ban_list
             WHERE user_id=?`,
@@ -803,7 +695,7 @@ kb.on("whisper", async (username, user, message, self) => {
             return;
         }
 
-        const checkCode = await utils.query(`
+        const checkCode = await kb.query(`
             SELECT *
             FROM access_token
             WHERE code=?`,
@@ -814,7 +706,7 @@ kb.on("whisper", async (username, user, message, self) => {
             return;
         }
 
-        const checkUser = await utils.query(`
+        const checkUser = await kb.query(`
             SELECT *
             FROM access_token
             WHERE user=? AND platform="lastfm"`,
@@ -822,14 +714,14 @@ kb.on("whisper", async (username, user, message, self) => {
 
         if (checkUser.length != 0) {
             kb.whisper(username, 'You are already registered for LastFM command.');
-            await utils.query(`
+            await kb.query(`
                 DELETE FROM access_token
                 WHERE code=?`,
                 [message.split(' ')[1]]);
             return;
         }
 
-        await utils.query(`
+        await kb.query(`
             UPDATE access_token
             SET userName=?, user=?, code="lastfm"
             WHERE code=?`,
@@ -841,7 +733,7 @@ kb.on("whisper", async (username, user, message, self) => {
 
     if (message.split(' ')[0] === "verify-spotify") {
         // check if user is banned from bot
-        const checkBan = await utils.query(`
+        const checkBan = await kb.query(`
             SELECT *
             FROM ban_list
             WHERE user_id=?`,
@@ -851,7 +743,7 @@ kb.on("whisper", async (username, user, message, self) => {
             return;
         }
 
-        const checkCode = await utils.query(`
+        const checkCode = await kb.query(`
             SELECT *
             FROM access_token
             WHERE code=?`,
@@ -862,7 +754,7 @@ kb.on("whisper", async (username, user, message, self) => {
             return;
         }
 
-        const checkUser = await utils.query(`
+        const checkUser = await kb.query(`
             SELECT *
             FROM access_token
             WHERE user=? AND platform="spotify"`,
@@ -870,7 +762,7 @@ kb.on("whisper", async (username, user, message, self) => {
 
         if (checkUser.length != 0) {
             kb.whisper(username, 'You are already registered for Spotify command.');
-            await utils.query(`
+            await kb.query(`
                 DELETE FROM access_token
                 WHERE code=?`,
                 [message.split(' ')[1]]);
@@ -879,7 +771,7 @@ kb.on("whisper", async (username, user, message, self) => {
 
         const timestamp = new Date().toISOString().slice(0, 19).replace('T', ' ');
 
-        await utils.query(`
+        await kb.query(`
             UPDATE access_token
             SET userName=?,
                 user=?,
@@ -899,7 +791,7 @@ kb.on("whisper", async (username, user, message, self) => {
 
 app.get("/commands", async (req, res) => {
     const Table = require('table-builder');
-    const commands = await utils.query(`
+    const commands = await kb.query(`
         SELECT *
         FROM commands
         WHERE permissions < 5
@@ -946,7 +838,7 @@ app.get("/commands", async (req, res) => {
           		<title>commands</title>
 				<meta name="viewport" content="width=device-width, initial-scale=1">
 				<link rel="icon" type="image/png" href="https://i.imgur.com/Tyf3qyg.gif"/>
-                <link rel="stylesheet" type="text/css" href="https://kunszg.com/style_commands.css">
+                <link rel="stylesheet" type="text/css" href="https://kunszg.com/express_pages/styles/style_commands.css">
       		</head>
       		<body style="background-color: #1a1a1a">
                 <div style="color: lightgray;">
@@ -1004,39 +896,115 @@ app.get("/commands/code/*", async (req, res) => {
     return;
 });
 
+// bot request form
+
+app.get("/request", async (req, res) => {
+    const commands = await kb.query(`
+        SELECT *
+        FROM commands
+        WHERE permissions < 5
+        ORDER BY command
+        ASC`);
+
+    const createSelectAll = () => {
+        let selectSwitch = "";
+
+        for (let i = 0; i < commands.length; i++) {
+            selectSwitch += document.getElementById(`checkset${i}`).disabled = this.checked;
+        }
+
+        return selectSwitch
+    }
+
+    const createCommandList = () => {
+        let commandSwitch = `<div id="container">`;
+
+        for (let i = 0; i < commands.length; i++) {
+            commandSwitch += `
+            <div class="form-check form-switch item">
+                <input class="form-check-input" name="${i}" type="checkbox" id="checkset${i}">
+                <label class="form-check-label" for="checkset" style="color: white;">${commands[i].command}</label>
+            </div>`
+        }
+
+        return commandSwitch + "</div>";
+    }
+
+   const html = `
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <!-- Required meta tags -->
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+
+        <!-- Bootstrap CSS -->
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta1/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-giJF6kkoqNQ00vy+HMDP7azOuL0xtbfIcaT9wjKHr8RbDVddVHyTfAAsrekwKmP1" crossorigin="anonymous">
+
+        <title>Add KsyncBot to your channel</title>
+        <style>
+            #container {
+                column-count: 3;
+            }
+            .item {
+                break-inside: avoid-column;
+            }
+            .item:nth-of-type(2){
+                break-after:column;
+                display:block;
+            }
+        </style>
+    </head>
+    <body style="background-color: #1a1a1a; margin-left: 5vw; margin-right: 5vw;">
+    <form>
+        <div class="form-row">
+            <div class="col-md-4 mb-3">
+                <label for="validationServerUsername" style="color: white">Username</label>
+                <div class="input-group" style="width: 10vw">
+                    <div class="input-group-prepend">
+                    </div>
+                    <input type="text" class="form-control is-invalid" name="username" id="validationServerUsername" placeholder="Username" aria-describedby="inputGroupPrepend3" required>
+                        <div class="invalid-feedback">
+                            Please choose a username.
+                        </div>
+                </div>
+            </div>
+        </div>
+        <hr style="background-color: white;">
+            ${createSelectAll()}
+            <br>
+            ${createCommandList()}
+            <br>
+            <button class="btn btn-primary" type="submit">Submit form</button>
+    </form>
+    <!-- Optional JavaScript -->
+    <!-- jQuery first, then Popper.js, then Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta1/dist/js/bootstrap.bundle.min.js" integrity="sha384-ygbV9kiqUc6oa4msXn9868pTtWMgiQaeYH7/t7LECLbyPA2x65Kgf80OJFdroafW" crossorigin="anonymous"></script>
+    </body>
+</html>`
+
+    res.send(html)
+});
+
 /*  Data for random track command
 *
 *   credit to Musixmatch
 */
-app.get("/genres", async (req, res) => {
+app.get("/genres", (req, res) => {
     const genres = fs.readFileSync('./data/genres.json');
+    let html = fs.readFileSync('./website/html/express_pages/genres.html');
 
-    res.send(`
-        <!DOCTYPE html>
-        <html>
-            <head>
-                <meta name="viewport" content="width=device-width, initial-scale=1">
-                <link rel="icon" type="image/png" href="https://i.imgur.com/Tyf3qyg.gif"/>
-                <link href="https://kunszg.com/prism.css" rel="stylesheet" />
-                <title>genres</title>
-            </head>
-            <body style="background-color: #272822;">
-                <h3 style="color: gray;">Genres list</h3><br>
-                <pre style="font-size: 13px; color: gray;">You can use either a genre name or ID</pre><br>
-                <pre style="font-size: 13px; color: gray;">example 1: kb rt 2</pre>
-                <pre style="font-size: 13px; color: gray;">example 2: kb rt blues</pre><br>
-                <pre><code style="font-size: 13px;" class="language-json">${genres}</code></pre>
-                <script src="https://kunszg.com/prism.js"></script>
-            </body>
-        </html>
-        `);
+    html = html.toString();
 
+    const page = new utils.Swapper(html, [{
+        "genres": genres
+    }]);
 
-    return;
+    res.send(page.template());
 });
 
 app.get("/randomemote", async (req, res) => {
-    const randomemote = await utils.query(`
+    const randomemote = await kb.query(`
         SELECT *
         FROM emotes
         ORDER BY RAND()
@@ -1047,37 +1015,79 @@ app.get("/randomemote", async (req, res) => {
         {"emote": randomemote[1].emote, "emoteUrl": randomemote[1].url},
         {"emote": randomemote[2].emote, "emoteUrl": randomemote[2].url}
     ])
-})
+});
 
-app.get("/api/channels", async (req, res) => {
-    const Table = require('table-builder');
+let colors = false;
+const alt = new init.IRC();
+alt.sqlConnect();
 
-    const channels = await got("https://kunszg.com/api/channels?details=true").json()
+const colorData = async function() {
+    colors = await alt.query(`
+        SELECT color, COUNT(*) AS count
+        FROM user_list
+        GROUP BY color
+        HAVING count >= 100
+        ORDER BY count DESC
+        LIMIT 100`);
 
-    const headers = {
-        "channelInternalId": "Channel ID",
-        "channelName": "Name",
-        "channelUid": "Channel Twitch UID",
-        "channelStatus": "Status",
-        "channelAdded": "Joined",
-        "logTableSize": "Logs size",
-        "logStatus": "Logs status",
-        "commandsExecuted": "Commands used",
-        "isBanphraseApiActive": "Banphrase API"
-    };
-
-    const data = [];
-
-    for (let i = 0; i < channels.count; i++) {
-        data.push({
-
-        });
+    colors = {
+        type: 'horizontal column',
+        title: {
+            position: 'center',
+            label: {
+                text: '<span style="font-size: 24px">Total data for top 100 most popular user colors on twitch.tv</span>'
+            }
+        },
+        palette: colors.map(i => i.color),
+        legend: {
+            layout: 'vertical',
+            position: 'inside top right',
+            customEntries: colors.map((i) => {
+                const colorName = i.color.replace("gray", "no color");
+                return {
+                    name: colorName,
+                    icon: "none",
+                    value: String(i.count)
+                }
+            })
+        },
+        defaultPoint: {
+            tooltip: '<span style="color:%color"></span><b>%value %name</b>',
+        },
+        series: [{
+            points: colors.map((i) => {
+                const colorName = i.color.replace("gray", "no color");
+                return {
+                    name: colorName,
+                    color: i.color,
+                    x: colorName,
+                    y: Number(i.count)
+                }
+            })
+        }]
     }
+}
+colorData();
+setInterval(colorData, 10800000); // 3h
+
+app.get("/colors", (req, res) => {
+    if (!colors) {
+        return;
+    }
+
+    let html = fs.readFileSync('./website/html/express_pages/colors.html');
+
+    html = html.toString();
+
+    const page = new utils.Swapper(html, [{
+        "colors": colors
+    }]);
+
+    res.send(page.template());
 });
 
 app.get("/emotes", async (req, res) => {
     const Table = require('table-builder');
-
 
     const tableData = [];
     const tableDataRemoved = [];
@@ -1097,103 +1107,9 @@ app.get("/emotes", async (req, res) => {
         "removed": " <div class='table-headers'>removed</div> "
     };
 
-    const homepage = `
-        <!DOCTYPE html>
-        <html>
-            <head>
-                <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-                <title>emotes</title>
-                <meta name="viewport" content="width=device-width, initial-scale=1">
+    let homepage = fs.readFileSync('./website/html/express_pages/emotes.html');
 
-                <link rel="icon" type="image/png" href="https://i.imgur.com/Tyf3qyg.gif">
-                <link rel="stylesheet" type="text/css" href="https://kunszg.com/style_emotes.css">
-                <link rel="stylesheet" href="https://kunszg.com/reset.css">
-                <link rel="preconnect" href="https://fonts.gstatic.com">
-                <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;700&display=swap" rel="stylesheet">
-                <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
-            </head>
-            <body style="background-color: #1a1a1a" class="blockscroll">
-                <div class="content">
-                    <div class="logo">
-                        <h7 class="white__logo__word">Emote</h7>
-                        <h7 class="blue__logo__word"> checker</h7>
-                    </div>
-                    <div class="searchBox">
-                        <form action="/emotes" class="searchBox2">
-                            <input type="text" autofocus="autofocus" placeholder="Search for channel.." name="search" autocomplete="off" class="search__input">
-                            <button type="submit" class="search__button">
-                                <img src="./img/magnifier.png" height="20" width="20">
-                            </button>
-                        </form>
-                    <div>
-                    <div class="footer">
-                        Emote checker is based on logs from ksyncbot
-                    </div>
-                    <div style="margin-top: 30%; margin-right: 10%; margin-left: 10%; margin-bottom: 10%">
-                        <script>
-                            function show_image(src, alt) {
-                                const img = document.createElement("img");
-                                img.src = src;
-                                img.alt = alt;
-
-                                img.style.position = "absolute";
-                                img.style.top = document.body.clientHeight * Math.random()/1.2 + "px";
-                                img.style.left = document.body.clientWidth * Math.random()/1.2 + "px";
-
-                                document.body.appendChild(img);
-
-                                function fadeOut(element) {
-                                    let op = 1;  // initial opacity
-                                    let timer = setInterval(function () {
-                                        if (op <= 0.1){
-                                            clearInterval(timer);
-                                        }
-                                        element.style.opacity = op;
-                                        op -= 0.03;
-                                    }, 100);
-                                }
-
-                                fadeOut(img)
-
-                                setTimeout(() => {
-                                    document.body.removeChild(img)
-                                }, 3200);
-                            }
-
-                            fetch('https://kunszg.com/api/randomemote')
-                                .then(response => response.json())
-                                .then(data => {
-                                        show_image(data[0].emoteUrl, data[0].emote);
-
-                                        show_image(data[1].emoteUrl, data[1].emote);
-
-                                        show_image(data[2].emoteUrl, data[2].emote);
-                                })
-
-                            setInterval(() => {
-                                if (!document.hidden) {
-                                    fetch('https://kunszg.com/api/randomemote')
-                                        .then(response => response.json())
-                                        .then(data => {
-                                            setTimeout(() => {
-                                                show_image(data[0].emoteUrl, data[0].emote);
-                                            }, Math.floor(Math.random()*10)*1000);
-
-                                            setTimeout(() => {
-                                                show_image(data[1].emoteUrl, data[1].emote);
-                                            }, Math.floor(Math.random()*10)*1000);
-
-                                            setTimeout(() => {
-                                                show_image(data[2].emoteUrl, data[2].emote);
-                                            }, Math.floor(Math.random()*10)*1000);
-                                        })
-                                }
-                            }, 3000);
-                        </script>
-                    </div>
-                </div>
-            </body>
-        </html>`;
+    homepage = homepage.toString();
 
     if (!req.query.search) {
         res.send(homepage)
@@ -1201,7 +1117,7 @@ app.get("/emotes", async (req, res) => {
     }
 
     if ((await req.query?.search ?? false)) {
-        const emotes = await utils.query(`
+        const emotes = await kb.query(`
             SELECT *
             FROM emotes
             WHERE channel=?
@@ -1209,7 +1125,7 @@ app.get("/emotes", async (req, res) => {
             DESC`,
             [(!req.query.search ? "asdf" : req.query.search.toLowerCase())]);
 
-        const emotesRemoved = await utils.query(`
+        const emotesRemoved = await kb.query(`
             SELECT *
             FROM emotes_removed
             WHERE channel=?
@@ -1280,7 +1196,8 @@ app.get("/emotes", async (req, res) => {
                 "type": `<div class="table-contents" style="text-align: center;">-</div>`,
                 "removed": `<div class="table-contents" style="text-align: center;">-</div>`
             });
-        } else {
+        }
+        else {
             for (let i=0; i<emotesRemoved.length; i++) {
                 const emoteName = new ModifyOutput(emotesRemoved[i].emote);
 
@@ -1320,26 +1237,7 @@ app.get("/emotes", async (req, res) => {
     }
 
     if (req.query.search) {
-       /* res.send(
-            `
-            <!DOCTYPE html>
-            <html>
-                <head>
-                    <title>emotes</title>
-                    <meta name="viewport" content="width=device-width, initial-scale=1">
-                    <meta charset="UTF-8">
-                    <link rel="icon" type="image/png" href="https://i.imgur.com/Tyf3qyg.gif"/>
-                    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
-                    <link rel="stylesheet" type="text/css" href="https://kunszg.com/style_emotes_table.css">
-                </head>
-                <body>
-                </body>
-            </html>
-            `
-            );
-        */
-
-        const emoteCount = await utils.query(`
+        const emoteCount = await kb.query(`
             SELECT COUNT(*) as count, type
             FROM emotes
             WHERE CHANNEL=?
@@ -1349,182 +1247,40 @@ app.get("/emotes", async (req, res) => {
         const emoteCountFfz = !emoteCount.find(i => i.type === "ffz") ? 0 : emoteCount.find(i => i.type === "ffz").count;
         const emoteCount7Tv = !emoteCount.find(i => i.type === "7tv") ? 0 : emoteCount.find(i => i.type === "7tv").count;
 
-        res.send(`
-            <!DOCTYPE html>
-            <html>
-                <head>
-                    <title>emotes</title>
-                    <meta name="viewport" content="width=device-width, initial-scale=1">
-                    <meta charset="UTF-8">
-                    <link rel="icon" type="image/png" href="https://i.imgur.com/Tyf3qyg.gif"/>
-                    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
-                    <link rel="stylesheet" type="text/css" href="https://kunszg.com/style_emotes_table.css">
-                    <link rel="preconnect" href="https://fonts.gstatic.com">
-                    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;700&display=swap" rel="stylesheet">
-                    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
-                    <style>
-                        * {
-                          font-family: "Noto Sans", sans-serif;
-                        }
+        let html = fs.readFileSync('./website/html/express_pages/emotesDataTables.html');
 
-                        .searchBox {
-                          text-align: center;
-                        }
+        html = html.toString();
 
-                        .search__input {
-                          background-color: white;
-                          padding: 13px 16px;
-                          font-weight: 700;
-                          color: #000;
-                          border-radius: 5px 0px 0px 5px;
-                          border-top-style: hidden;
-                          border-right-style: hidden;
-                          border-left-style: hidden;
-                          border-bottom-style: hidden;
-                        }
+        const page = new utils.Swapper(html, [{
+            "search": req.query.search.toLowerCase(),
+            "search2": req.query.search.toLowerCase(),
+            "emoteCountBttv": emoteCountBttv,
+            "emoteCountFfz": emoteCountFfz,
+            "emoteCount7Tv": emoteCount7Tv,
+            "query": (await kb.query(`SELECT emotesUpdate FROM channels_logger WHERE channel="${req.query.search.toLowerCase()}"`))[0]?.emotesUpdate ?? new Date(),
+            "emotesAdded": (new Table({'class': 'table-context', 'id': "added-emotes-table"})).setHeaders(headers).setData(tableData).render(),
+            "emotesRemoved": (new Table({'class': 'table-context', 'id': "removed-emotes-table"})).setHeaders(headersRemoved).setData(tableDataRemoved).render()
+        }]);
 
-                        .search__button {
-                          background-color: #3e91f2;
-                          padding: 13px 13px 11px 13px;
-                          margin-left: -4px;
-                          border-top-style: hidden;
-                          border-right-style: hidden;
-                          border-left-style: hidden;
-                          border-bottom-style: hidden;
-                          border-radius: 0px 5px 5px 0px;
-                        }
-
-                        .footer {
-                            text-align: center;
-                            font-size: 12px;
-                            font-weight: 700;
-                            font-family: 'Noto Sans', sans-serif;
-                            position: fixed;
-                            text-align: center;
-                            bottom: 1%;
-                            width: 100%;
-                            color: #666666;
-                        }
-
-                        textarea:focus, input:focus {
-                            outline: none;
-                        }
-
-                        *:focus {
-                            outline: none;
-                        }
-                    </style>
-                </head>
-                <body style="background-color: #1a1a1a">
-                    <br>
-                    <div style="text-align: center; color: white";>
-                        <strong><a style="color: inherit;" href="https://twitch.tv/${req.query.search.toLowerCase()}">${req.query.search.toLowerCase()}'s</a> emotes</strong>
-                    </div>
-                    <br>
-                    <div class="searchBox">
-                        <form action="/emotes" class="searchBox2">
-                            <input type="text" autofocus="autofocus" placeholder="Search for channel.." name="search" autocomplete="off" class="search__input">
-                            <button type="submit" class="search__button">
-                                <img style="vertical-align: middle;" src="https://i.imgur.com/gQPOwPT.png" height="20" width="20">
-                            </button>
-                        </form>
-                    <div>
-                   <div style="color: white; text-align: left; font-size: 19px">
-                        <i>BTTV: ${emoteCountBttv}</i><br>
-                        <i>FFZ: ${emoteCountFfz}</i><br>
-                        <i>7TV: ${emoteCount7Tv}</i><br>
-                    </div>
-                    <br>
-                    <div id="timer" style="text-align: left"></div>
-                    <script>
-                        function lastUpdate() {
-                            return (Date.now() - (Date.parse("${(await utils.query(`SELECT emotesUpdate FROM channels_logger WHERE channel="${req.query.search.toLowerCase()}"`))[0]?.emotesUpdate ?? new Date()} UTC")))/1000;
-                        }
-
-                        const secondsToDhms = (seconds) => {
-                            seconds = Number(seconds);
-                            const d = Math.floor(seconds / (3600*24));
-                            const h = Math.floor(seconds % (3600*24) / 3600);
-                            const m = Math.floor(seconds % 3600 / 60);
-                            const s = Math.floor(seconds % 60);
-
-                            const dDisplay = d > 0 ? d + " " : "";
-                            const hDisplay = h > 0 ? h + 'h' + " " : "";
-                            const mDisplay = m > 0 ? m + 'm' + " " : "";
-                            const sDisplay = s > 0 ? s + 's' : '0' + s + 's';
-                            return dDisplay + hDisplay + mDisplay + sDisplay;
-                        }
-
-                        setInterval(() => {
-                            const timer = '<i style="color:white">LAST UPDATE</i><div style="color: white; font-size: 20px;">'+secondsToDhms(lastUpdate())+'<i style="color:white; font-size:15px; font-family: "Noto Sans", sans-serif;"> AGO</i></div>';
-
-                            document.getElementById("timer").innerHTML = timer;
-                        }, 1000)
-                    </script>
-                    <div style="color: lightgray; float: left;">
-                        <strong style="color: white; text-align: center;">USABLE EMOTES</strong><br>
-                        <input type="text" id="search" placeholder="Type to search" autocomplete="off">
-                        <br>
-                        ${(new Table({'class': 'table-context', 'id': "added-emotes-table"}))
-                            .setHeaders(headers)
-                            .setData(tableData)
-                            .render()}
-                    </div>
-                    <div style="margin-top: -1px; color: lightgray; float: right;">
-                        <strong style="color: white; text-align: center;">REMOVED EMOTES</strong><br>
-                        <input type="text" id="search2" placeholder="Type to search" autocomplete="off">
-                        <br>
-                        ${(new Table({'class': 'table-context', 'id': "removed-emotes-table"}))
-                            .setHeaders(headersRemoved)
-                            .setData(tableDataRemoved)
-                            .render()}
-                    </div>
-                    <script>
-                        let $rows = $('#added-emotes-table tbody tr');
-                        $('#search').keyup(function() {
-                            let val = $.trim($(this).val()).replace(/ +/g, ' ').toLowerCase();
-
-                            $rows.show().filter(function() {
-                                let text = $(this).text().replace(/\s+/g, ' ').toLowerCase();
-                                return !~text.indexOf(val);
-                            }).hide();
-                        });
-
-                        let $rows2 = $('#removed-emotes-table tbody tr');
-                        $('#search2').keyup(function() {
-                            let val = $.trim($(this).val()).replace(/ +/g, ' ').toLowerCase();
-
-                            $rows2.show().filter(function() {
-                                let text = $(this).text().replace(/\s+/g, ' ').toLowerCase();
-                                return !~text.indexOf(val);
-                            }).hide();
-                        });
-                    </script>
-                    <div class="footer">
-                        Emote checker is based on logs from ksyncbot
-                    </div>
-                </body>
-            </html>`
-        );
+        res.send(page.template());
     }
-
-    return;
 });
 
 // kunszg.com/api/stats
 app.get("/stats", async (req, res) => {
-    const modules = await utils.query(`SELECT * FROM stats`);
+    const modules = await kb.query(`SELECT * FROM stats`);
 
     const getModuleData = (input) => {
         const moduleData = modules.filter(i => i.type === 'module' && i.sha === input);
         return Date.parse(moduleData[0].date)
     }
 
-    const executions = await utils.query('SELECT count FROM stats WHERE type="statsApi" AND sha="commandExecs"');
-    const usersLogged = await utils.query('SELECT count FROM stats WHERE type="statsApi" AND sha="totalUsers"');
-    const channels = await utils.query("SELECT * FROM channels");
+    const executions = await kb.query('SELECT count FROM stats WHERE type="statsApi" AND sha="commandExecs"');
+    const usersLogged = await kb.query('SELECT count FROM stats WHERE type="statsApi" AND sha="totalUsers"');
+    const channels = await kb.query("SELECT * FROM channels");
 
-    const checkIfLive = channels.filter(i => i.channel === "kunszg")[0].status === "live";
+    let totalViewCount = (channels.filter(i => Number(i.viewerCount) > 0)).map(i => Number(i.viewerCount));
+    totalViewCount = totalViewCount.reduce(function (x, y) { return x + y; }, 0);
 
     const commits = shell.execSync('sudo git rev-list --count master');
     const lines = shell.execSync(`find . -name '*.js' -not -path "./node_modules*" | xargs wc -l | tail -1`);
@@ -1553,10 +1309,9 @@ app.get("/stats", async (req, res) => {
             "commits": Number(commits)
         },
         "twitch": {
-            "isAuthorLive": checkIfLive
+            "totalViewCount": totalViewCount
         }
     });
-
 
     return;
 });
@@ -1576,7 +1331,7 @@ app.get("/commands/code", async (req, res) => {
 app.listen(process.env.PORT || 8080, '0.0.0.0');
 
 const statusCheck = async() => {
-	await utils.query(`
+	await kb.query(`
 		UPDATE stats
 		SET date=?
 		WHERE type="module" AND sha="api"`,

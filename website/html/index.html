@@ -31,15 +31,15 @@
         <script>
             let timeout;
 
-            const image = ['loader1.png', 'loader2.png', 'loader3.png', 
-                'loader4.png', 'loader5.png', 'loader6.png', 'loader7.png', 
+            const image = ['loader1.png', 'loader2.png', 'loader3.png',
+                'loader4.png', 'loader5.png', 'loader6.png', 'loader7.png',
                 'loader8.gif', 'loader9.gif', 'loader10.gif', 'loader11.gif',
-                'loader12.png']; 
+                'loader12.png'];
 
             const num = Math.floor( Math.random() * image.length);
 
             const img = image[num];
-            
+
             document.getElementById("loader").style["background-image"] = `url("./img/${img}")`;
 
             setTimeout(() => {
@@ -49,7 +49,7 @@
                     document.getElementById("main").style.display = "inherit";
                     document.getElementById("inh").style.display = "block";
                 });
-            }, 300); 
+            }, 300);
         </script>
         <div id="main">
             <br><br>
@@ -73,8 +73,8 @@
                                     <col style="width: 115px;">
                                 </colgroup>
                                 <tr>
-                                    <td style="font-style: italic;">my stream is currently </td>
-                                    <td style="padding:0 15px;" id="isAuthorLive"></td>
+                                    <td style="font-style: italic;">total live viewer count </td>
+                                    <td style="padding:0 15px;" id="totalViewCount"></td>
                                 </tr>
                                 <tr>
                                     <td style="font-style: italic;">total users tracked </td>
@@ -148,15 +148,15 @@
                                 return input.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ")
                             }
 
-                            document.getElementById("isAuthorLive").innerHTML = `${data.twitch.isAuthoLive ? "live" : "offline"}`;
+                            document.getElementById("totalViewCount").innerHTML = spreadNumbers(data.twitch.totalViewCount);
 
-                            document.getElementById("usersLogged").innerHTML = `${spreadNumbers(data.bot.usersLogged)}`;
+                            document.getElementById("usersLogged").innerHTML = spreadNumbers(data.bot.usersLogged);
 
-                            document.getElementById("commandExecutions").innerHTML = `${spreadNumbers(data.bot.commandExecutions)}`;
+                            document.getElementById("commandExecutions").innerHTML = spreadNumbers(data.bot.commandExecutions);
 
-                            document.getElementById("commits").innerHTML = `${spreadNumbers(data.github.commits)}`;
+                            document.getElementById("commits").innerHTML = spreadNumbers(data.github.commits);
 
-                            document.getElementById("linesOfCode").innerHTML = `${spreadNumbers(data.bot.linesOfCode)}`;
+                            document.getElementById("linesOfCode").innerHTML = spreadNumbers(data.bot.linesOfCode);
 
                             document.getElementById("loggerUptime").innerHTML = `${loggerUptime > 70 ? '<span title="offline" class="redDot"></span>' : '<span title="online" class="greenDot"></span>'}`;
 
@@ -174,10 +174,10 @@
                                 if (refresh > 5) {
                                     document.getElementById("botUptime").innerHTML = `<span title="offline" class="redDot"></span>`;
                                 }
-                                
+
                                 refresh++;
                             }, 1000);
-   /*                     
+   /*
                             fetch("https://api.github.com/repos/kunszg/kbot/commits?per_page=6")
                                 .then(response2 => response2.json())
                                 .then(github => {
@@ -190,10 +190,10 @@
                                 const message = JSON.parse(event.data);
 
                                 // cached data
-                                if (message.cache) { 
+                                if (message.cache) {
                                     if (message?.botUptime ?? false) {
-                                        document.getElementById("botUptime").innerHTML = `${data.bot.isRestarting ? '🔄 restarting' : secondsToDhms(Math.trunc(message.botUptime.data))}`;
-                                    } 
+                                        document.getElementById("botUptime").innerHTML = secondsToDhms(Math.trunc(message.botUptime.data));
+                                    }
 
                                     if (message?.mps ?? false) {
                                         document.getElementById("mps").innerHTML = `${message.mps.data}/s`;
@@ -214,20 +214,24 @@
                                         }
                                     }
                                     else {
-                                        if (hook.type === "botUptime") {
-                                            document.getElementById("botUptime").innerHTML = `${data.bot.isRestarting ? '🔄 restarting' : secondsToDhms(Math.trunc(message.body.data))}`;
-                                        }
-
-                                        if (hook.type === "mps") {
-                                            document.getElementById("mps").innerHTML = `${message.body.data}/s`;
+                                        switch(hook.type) {
+                                            case "botUptime":
+                                                document.getElementById("botUptime").innerHTML = secondsToDhms(Math.trunc(message.body.data));
+                                                break;
+                                            case "mps":
+                                                document.getElementById("mps").innerHTML = `${spreadNumbers(message.body.data)}/s`;
+                                                break;
+                                            case "totalViewCount":
+                                                document.getElementById("totalViewCount").innerHTML = spreadNumbers(message.body.data);
+                                                break;
                                         }
                                     }
 
-                                    /*                       
+                                    /*
                                     if (hook === "github") {
                                         if (message.body.event === "push") {
                                             document.getElementById("github-push").innerHTML += `<a href="https://github.com/KUNszg/kbot/commit/${message.body.data.head_commit.id}"<div style="color: white;" class="button1">test</div></a>`;
-                                        } 
+                                        }
                                     }
                                     */
                                 }
@@ -241,7 +245,28 @@
             <div id="inh" class="animate-bottom">
                 <div style="margin-top: 10%; vertical-align: middle; white-space: nowrap;">
                     <h1 class="inner" style="margin-left: -3px;">
-                        <a href="https://www.twitch.tv/ksyncbot" style="text-decoration: none;" class="button1">KsyncBot</a>
+                        <a href="https://www.twitch.tv/ksyncbot" style="text-decoration: none;" class="button1" id="main-text">KBot</a>
+                        <script type="text/javascript">
+                            const rand = () => {
+                                return (Math.random() * 10) * 100;
+                            }
+
+                            setTimeout(() => {
+                                document.getElementById("main-text").innerHTML = "KsBot";
+                                setTimeout(() => {
+                                    document.getElementById("main-text").innerHTML = "KsyBot";
+                                    setTimeout(() => {
+                                        document.getElementById("main-text").innerHTML = "KsynBot";
+                                        setTimeout(() => {
+                                            document.getElementById("main-text").innerHTML = "KsynBot";
+                                            setTimeout(() => {
+                                                document.getElementById("main-text").innerHTML = "KsyncBot";
+                                            }, rand());
+                                        }, rand());
+                                    }, rand());
+                                }, rand());
+                            }, 1500);
+                        </script>
                     </h1>
                     <div class="animate-bottom">
                         <div class="dropdown">
@@ -256,6 +281,9 @@
                                 <a class="github select" target="_blank" href="https://github.com/KUNszg/vypyr-connector">
                                     <pre style="margin-bottom:17px">VYPYR-CONNECTOR</pre>
                                 </a>
+                                <a class="github select" target="_blank" href="https://github.com/KUNszg/qtify">
+                                    <pre style="margin-bottom:17px">QTIFY</pre>
+                                </a>
                             </div>
                         </div>
                         <div class="dropdown">
@@ -263,12 +291,15 @@
                                 <pre style="margin-bottom:17px">BOT</pre>
                                 <img class="res" src="img\commands.png">
                             </button>
-                            <div id="dropdwnCommands" class="dropdown-content" style="left:-20px">
+                            <div id="dropdwnCommands" class="dropdown-content" style="left:-20px;">
                                 <a class="commands select" target="_self" href="commands">
                                     <pre style="margin-bottom:17px">COMMANDS</pre>
                                 </a>
-                                <a class="commands select" target="_self" href="connections" style="background-image: url('https://dobrelajki.pl/wp-content/uploads/2019/12/spotify-download-logo-30.png'); background-size: 35px 35px; background-repeat: no-repeat; background-position: -12px;">
+                                <a class="commands select" target="_self" href="connections" style="background-image: url('./img/spotify_logo.png'); background-size: 35px 35px; background-repeat: no-repeat; background-position: -12px;">
                                     <pre style="margin-bottom:17px">CONNECTIONS</pre>
+                                </a>
+                                <a class="commands select" target="_self" href="colors" style="background-image: url('./img/colors_logo.png'); background-size: 32px 32px; background-repeat: no-repeat; background-position: -12px;">
+                                    <pre style="margin-bottom:17px">COLOR STATS</pre>
                                 </a>
                             </div>
                         </div>

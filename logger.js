@@ -1,67 +1,37 @@
 #!/usr/bin/env node
 'use strict';
 
+const init = require('./lib/utils/connection.js');
+const creds = require('./lib/credentials/config.js');
+const regex = require('./lib/utils/regex.js');
+const utils = require("./lib/utils/utils.js");
+
+/*const redis = init.Redis;
+redis.connect();*/
+
+const kb = new init.IRC();
+kb.tmiConnect();
+kb.sqlConnect();
+/*redis.set("key", ["yep"]);
+(async () => {
+    await redis.append("key", ["cock"])
+    //const x = await redis.get("key");
+    const x = await redis.size();
+    console.log(x)
+})();*/
 (async() => {
     try {
-        const creds = require('./lib/credentials/config.js');
-        const mysql = require('mysql2');
-        const regex = require('./lib/utils/regex.js');
-
-        const con = mysql.createConnection({
-            host: "localhost",
-            user: "root",
-            password: creds.db_pass,
-            database: "kbot"
-        });
-
-        const query = (query, data = []) => new Promise((resolve, reject) => {
-            con.execute(query, data, async(err, results) => {
-                if (err) {
-                    return;
-                } else {
-                    resolve(results);
-                }
-            });
-        });
-
-        this.channelList = await query('SELECT * FROM channels_logger');
+        this.channelList = await kb.query('SELECT * FROM channels_logger');
 
         setInterval(async () => {
-            this.channelList = await query('SELECT * FROM channels_logger');
+            this.channelList = await kb.query('SELECT * FROM channels_logger');
         }, 600000);
 
-        const channelOptions = this.channelList.map(i => i.channel)
-
-        const options = {
-            options: {
-                debug: false,
-            },
-            identity: {
-                username: 'ksyncbot',
-                password: creds.oauth,
-            },
-            channels: channelOptions,
-        };
-
         const tmi = require('tmi.js');
-        const kb = new tmi.client(options);
 
         const ignoreList = [];
 
-        (await query("SELECT * FROM logger_ignore_list")).map(i => ignoreList.push(i.userId));
-
-        kb.connect();
-
-        con.connect((err) => {
-            if (err) {
-                kb.say('kunszg', '@kunszg, database connection error monkaS')
-                console.log(err)
-            } else {
-                console.log("Connected!");
-            }
-        });
-
-        con.on('error', (err) => {console.log(err)});
+        (await kb.query("SELECT * FROM logger_ignore_list")).map(i => ignoreList.push(i.userId));
 
         const cache = [];
         const userCache = [];
@@ -101,7 +71,7 @@
         const updateLogs = () => {
             cache.forEach(async (data) => {
                 // update last message of the user
-                await query(`
+                await kb.query(`
                     UPDATE user_list
                     SET lastSeen=?
                     WHERE username=?`,
@@ -111,7 +81,7 @@
                     ]);
 
                 // log user's message
-                await query(`
+                await kb.query(`
                     INSERT INTO logs_${data['channel']} (username, message, date)
                     VALUES (?, ?, ?)`,
                     [
@@ -123,30 +93,55 @@
                 // matching bad words
                 const badWord = data['message'].match(regex.racism);
                 if (badWord) {
-                    await query(`
-                        INSERT INTO bruh (username, channel, message, date)
-                        VALUES (?, ?, ?, ?)`,
-                        [
-                            data['username'],
-                            data['channel'],
-                            data['message'],
-                            data['date']
-                        ]);
+                    const activeApis = await kb.query(`
+                        SELECT *
+                        FROM channel_banphrase_apis
+                        WHERE channel=? AND status="enabled"`,
+                        [data['channel']]);
+
+                    if (activeApis.length) {
+                        if ((await utils.banphrasePass(data['username'], data['channel'])).banned) {
+                            await kb.query(`
+                                INSERT INTO bruh (username, channel, message, date)
+                                VALUES (?, ?, ?, ?)`,
+                                [
+                                    data['username'],
+                                    data['channel'],
+                                    data['message'],
+                                    data['date']
+                                ]);
+                        }
+                    }
+                    else {
+                        await kb.query(`
+                            INSERT INTO bruh (username, channel, message, date)
+                            VALUES (?, ?, ?, ?)`,
+                            [
+                                data['username'],
+                                data['channel'],
+                                data['message'],
+                                data['date']
+                            ]);
+                    }
                 }
 
-                const checkIfUnique = await query(`
-                    SELECT *
-                    FROM user_list
-                    WHERE username=?`, [data['username']]);
+                (async () => {
+                    const checkIfUnique = await kb.query(`
+                        SELECT *
+                        FROM user_list
+                        WHERE username=?`, [data['username']]);
 
-                if (!checkIfUnique.length) {
-                    userCache.push(1);
-                }
+                    if (!checkIfUnique.length) {
+                        userCache.push(1);
+                    }
+                })();
+
+                data['color'] = (data['color'] === '' || data['color'] === null) ? 'gray' : data['color'];
 
                 // no code should appear after this function in this block
-                await query(`
-                    INSERT INTO user_list (username, userId, firstSeen, lastSeen, color, added)
-                    VALUES (?, ?, ?, ?, ?, ?)`,
+                await kb.query(`
+                INSERT IGNORE INTO user_list (username, userId, firstSeen, lastSeen, color, added)
+                VALUES (?, ?, ?, ?, ?, ?)`,
                     [
                         data['username'],
                         data['user-id'],
@@ -163,7 +158,7 @@
         setInterval(() => {
             const mps = mpsCache.filter(i => i < (Date.now() - 1500));
 
-         // send data to websocket
+            // send data to websocket
             new WSocket("wsl").emit(
                 {type: "mps", data: (mps.length)}
             );
@@ -187,20 +182,11 @@
         }, 7000);
 
         setInterval(async() => {
-            await query(`
-                UPDATE user_list
-                SET color="gray"
-                WHERE color IS null
-                `);
-
-            await query(`
-                DELETE FROM user_list
-                WHERE username IS null
-                `);
+            await kb.query("DELETE FROM user_list WHERE username IS null OR username = ''");
         }, 1800000);
 
         const statusCheck = async() => {
-            await query(`
+            await kb.query(`
                 UPDATE stats
                 SET date=?
                 WHERE type="module" AND sha="logger"`,
@@ -209,88 +195,62 @@
         statusCheck();
         setInterval(()=>{statusCheck()}, 60000);
 
-        kb.on("subscription", async (channel, username, method, message) => {
-            await query(`
-                INSERT INTO subs (username, channel, months, subMessage, type, date)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-                [username, channel.replace('#', ''), "1", message, "subscription"]);
+        kb.on("usernotice", async(msg) => {
+            const msgID = msg.messageTypeID;
+            const channel = msg.channelName;
 
-            if (channel === "#kunszg") {
-                kb.say('kunszg', `${username} just subscribed KomodoHype !`);
+            if (msg.eventParams.subPlan) {
+                const username = msg?.senderUsername ?? "anonymous";
+                const message = msg?.messageText ?? "";
+                const months = msg.eventParams?.cumulativeMonths ?? 0;
+                const giftRecipient = msg.eventParams?.recipientUsername ?? "anonymous (somehow)";
+
+                if (msgID.includes("gift")) {
+                    await kb.query(`
+                    INSERT INTO subs (username, gifter, channel, months, subMessage, type, date)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+                        [giftRecipient, username, channel, months, message, msgID]);
+                }
+                else {
+                    await kb.query(`
+                    INSERT INTO subs (username, channel, months, subMessage, type, date)
+                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+                        [username, channel, months, message, msgID]);
+                }
+            }
+            else {
+                // notice messages from twitch
+                if (msgID === "host_target_went_offline" || msgID === "host_on") {
+                    return;
+                }
+
+                await kb.query(`
+                    INSERT INTO notice (msgid, message, channel, module, date)
+                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+                    [msgID, msg.systemMessage, channel, "logger"]);
             }
         });
 
-        kb.on("subgift", async (channel, username, streakMonths, recipient, userstate) => {
-            let cumulative = ~~userstate["msg-param-cumulative-months"];
-
-            await query(`
-                INSERT INTO subs (gifter, channel, months, username, type, date)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-                [username, channel.replace('#', ''), cumulative, recipient, "subgift"]);
-
-            if (channel === "#kunszg") {
-                kb.say('kunszg', `${recipient} got gifted a sub from ${username}, it's their ${cumulative} month KomodoHype !`);
-            }
-        });
-
-        kb.on("resub", async (channel, username, streakMonths, message, userstate) => {
-            let cumulativeMonths = ~~userstate["msg-param-cumulative-months"];
-
-            await query(`
-                INSERT INTO subs (username, channel, months, subMessage, type, date)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-                [username, channel.replace('#', ''), cumulativeMonths, message, "resub"]);
-
-            if (channel === "#kunszg") {
-                kb.say('kunszg', `${username} just resubscribed for ${cumulativeMonths} months KomodoHype !`);
-            }
-        });
-
-        kb.on("giftpaidupgrade", async (channel, username, sender) => {
-            await query(`
-                INSERT INTO subs (username, channel, gifter, type, date)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-                [username, channel.replace('#', ''), sender, "giftpaidupgrade"]);
-
-            if (channel === "#kunszg") {
-                kb.say('kunszg', `${username} is continuing the gifted sub they got from ${sender} KomodoHype !`);
-            }
-        });
-
-        kb.on("anongiftpaidupgrade", async (channel, username) => {
-            await query(`
-                INSERT INTO subs (username, channel, type, date)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
-                [username, channel.replace('#', ''), "anongiftpaidupgrade"]);
-
-            if (channel === "#kunszg") {
-                kb.say('kunszg', `${username} is continuing the gifted sub they got from an anonymous user KomodoHype !`);
-            }
-        });
-
-        // notice messages from twitch
-        kb.on("notice", async (channel, msgid, message) => {
-            if (msgid === "host_target_went_offline") {
+        kb.on("notice", async(channel, msgID, message) => {
+            // notice messages from twitch
+            if (msgID === "host_target_went_offline" || msgID === "host_on") {
                 return;
             }
 
-            await query(`
+            await kb.query(`
                 INSERT INTO notice (msgid, message, channel, module, date)
                 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-                [msgid, message, channel.replace('#', ''), "logger"]);
-            return;
+                [msgID, message, channel.replace("#", ""), "logger"]);
         });
 
         setInterval(async () => {
-            await query(`
+            await kb.query(`
                 UPDATE memory
                 SET memory=?
                 WHERE module="logger"`,
                 [(process.memoryUsage().heapUsed/1024/1024).toFixed(2)]);
         }, 600000);
     } catch (err) {
-        console.log("-------------------------------------------------------------\n");
-        console.log(new Date().toISOString());
         console.log(err);
     }
 })();

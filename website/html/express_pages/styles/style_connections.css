@@ -10,7 +10,7 @@ body {
 
 .top-text {
     text-align: center;
-    margin-top: 16vh;
+    margin-top: 10vh;
     line-height: 32px;
 }
 
@@ -51,14 +51,13 @@ body {
     vertical-align: middle;
 }
 
-.footer-div {
-    text-align: center;
-    margin-top: 25vh;
-}
-
 .footer-text {
     color: gray;
     font-family: 'Noto Sans', sans-serif;
+}
+
+.footer-div {
+    text-align: center;
 }
 
 a:hover {
